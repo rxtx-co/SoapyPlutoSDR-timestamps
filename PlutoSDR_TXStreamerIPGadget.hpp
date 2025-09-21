@@ -18,11 +18,12 @@
 
 #include "FIFO.hpp"
 
+#include "sdr_ip_gadget_types.h"
 #include "sdr_ip_gadget_private_types.h"
 
 class tx_streamer_ip_gadget : public tx_streamer {
 	public:
-		tx_streamer_ip_gadget(const iio_device *dev, int sock_control, int sock_data, size_t udp_packet_size, const plutosdrStreamFormat format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t timestamp_every);
+		tx_streamer_ip_gadget(const iio_device *dev, int sock_control, size_t udp_packet_size, const plutosdrStreamFormat format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t timestamp_every);
 		~tx_streamer_ip_gadget();
 
 		int send(const void * const *buffs,
@@ -53,11 +54,15 @@ class tx_streamer_ip_gadget : public tx_streamer {
 		int sock_data;
 		size_t udp_packet_size;
 
+		// report stream failure
+		bool _failed;
+
 		// Sample format
 		const plutosdrStreamFormat format;
 
 		// How often to expect a timestamp in the stream
 		uint32_t timestamp_every;
+		uint32_t timestamp_clock_rate;
 
 		// Read thread
 		std::thread thread;
@@ -80,14 +85,8 @@ class tx_streamer_ip_gadget : public tx_streamer {
 		// Expected sample size (bytes)
 		uint32_t sample_size_bytes;
 
-		// Expected timestamp size (samples)
-		uint32_t timestamp_size_samples;
-
 		// Buffer size, excluding timestamp (samples)
 		uint32_t buffer_size_samples;
-
-		// Number of UDP packets required to transfer a buffer
-		size_t packets_per_buffer;
 
 		// Direct copy supported
 		bool direct_copy;
@@ -106,4 +105,27 @@ class tx_streamer_ip_gadget : public tx_streamer {
 		// Private start / stop functions
 		void _start(void);
 		void _stop(void);
+
+		// Transport control
+		int udp_prepare();
+		int tcp_prepare();
+		int udp_send(uint64_t seqno, uint8_t *payload);
+		int tcp_send(uint64_t seqno, uint8_t *payload);
+		int tcp_send_data(uint8_t *payload, size_t size);
+
+		bool _transport_tcp;
+		int _data_fd;
+		uint32_t _payload_size;
+
+		struct {
+			uint32_t packet_payload_size;
+			uint32_t packets_per_buffer;
+
+			struct mmsghdr *arr_mmsg_hdrs;
+			struct iovec *arr_iovs;
+			data_ip_hdr_t *arr_pkt_hdrs;
+		} _udp;
+		struct {
+			data_ip_hdr_t pkt_hdr;
+		} _tcp;
 };

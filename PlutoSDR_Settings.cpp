@@ -21,9 +21,6 @@ static iio_context *ctx = nullptr;
 static libusb_context *usb_ctx = nullptr;
 #endif
 
-#define DIRECT_IP_PORT_CONTROL (30432) // IIOD + 1
-#define DIRECT_IP_PORT_DATA (30433) // IIOD + 2
-
 SoapyPlutoSDR::SoapyPlutoSDR( const SoapySDR::Kwargs &args ):
 	dev(nullptr), rx_dev(nullptr),tx_dev(nullptr), decimation(false), interpolation(false), rx_stream(nullptr)
 {
@@ -71,7 +68,6 @@ SoapyPlutoSDR::SoapyPlutoSDR( const SoapySDR::Kwargs &args ):
 	usb_sdr_dev = nullptr;
 	#endif
 	ip_sdr_dev_control = -1;
-	ip_sdr_dev_data = -1;
 
 	// Assume loopback unchanged
 	loopback = -1;
@@ -122,10 +118,6 @@ SoapyPlutoSDR::~SoapyPlutoSDR(void){
 	if(this->ip_sdr_dev_control){
 		close(this->ip_sdr_dev_control);
 		this->ip_sdr_dev_control = -1;
-	}
-	if(this->ip_sdr_dev_data){
-		close(this->ip_sdr_dev_data);
-		this->ip_sdr_dev_data = -1;
 	}
 
 	if(usb_ctx){
@@ -843,7 +835,7 @@ void SoapyPlutoSDR::handle_direct_args(const SoapySDR::Kwargs & args)
 		}
 		else if (0 == strcmp(iio_context_get_name(ctx), "network")) {
 			// Connected via network (hopefully physical ethernet)
-			if ((-1 == this->ip_sdr_dev_control) || (-1 == this->ip_sdr_dev_data)) {
+			if ((-1 == this->ip_sdr_dev_control)) {
 				// Open ip device
 				this->open_sdr_ip_gadget();
 
@@ -1088,21 +1080,7 @@ void SoapyPlutoSDR::open_sdr_ip_gadget(void)
 		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to open control socket");
 		throw std::runtime_error("failed to open control socket");
 	}
-	this->ip_sdr_dev_data = socket(AF_INET, SOCK_DGRAM, 0);
-	if (-1 == this->ip_sdr_dev_data) {
-		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to open data socket");
-		throw std::runtime_error("failed to open data socket");
-	}
 
-	// Bind data socket, such that we can tell the server where to direct rx data to
-	memset(&addr, 0x00, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = INADDR_ANY;
-	addr.sin_port = 0;  // Let the system choose an available port
-	if (bind(this->ip_sdr_dev_data, (struct sockaddr*)&addr, sizeof(addr))) {
-		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to bind data socket");
-		throw std::runtime_error("failed to bind data socket");
-	}
 
 	// "Connect" to direct server (saves needing to provide the address each time)
 	memset(&addr, 0x00, sizeof(addr));
@@ -1112,19 +1090,5 @@ void SoapyPlutoSDR::open_sdr_ip_gadget(void)
 	if (connect(this->ip_sdr_dev_control, (struct sockaddr*)&addr, sizeof(addr))) {
 		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to connect control socket");
 		throw std::runtime_error("failed to connect control socket");
-	}
-	addr.sin_port = htons(DIRECT_IP_PORT_DATA);
-	if (connect(this->ip_sdr_dev_data, (struct sockaddr*)&addr, sizeof(addr))) {
-		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to connect data socket");
-		throw std::runtime_error("failed to connect data socket");
-	}
-
-	// Set receive timeout on data socket
-	struct timeval timeout;
-	timeout.tv_sec = 1;
-	timeout.tv_usec = 0;
-	if (setsockopt(this->ip_sdr_dev_data, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to set data socket receive timeout");
-		throw std::runtime_error("failed to set data socket receive timeout");
 	}
 }

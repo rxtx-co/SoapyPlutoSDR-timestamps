@@ -366,7 +366,6 @@ class SoapyPlutoSDR : public SoapySDR::Device{
 
 		/* "Direct" IP ethernet gadget */
 		int ip_sdr_dev_control;
-		int ip_sdr_dev_data;
 		size_t udp_packet_size;
 		void open_sdr_ip_gadget(void);
 };

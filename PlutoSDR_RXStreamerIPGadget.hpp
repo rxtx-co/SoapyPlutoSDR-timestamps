@@ -6,6 +6,8 @@
 
 #include <iio.h>
 
+#include <sys/socket.h>
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include <libusb.h>
@@ -18,11 +20,12 @@
 
 #include "FIFO.hpp"
 
+#include "sdr_ip_gadget_types.h"
 #include "sdr_ip_gadget_private_types.h"
 
 class rx_streamer_ip_gadget : public rx_streamer {
 	public:
-		rx_streamer_ip_gadget(const iio_device *dev, int sock_control, int sock_data, size_t udp_packet_size, const plutosdrStreamFormat format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t timestamp_every);
+		rx_streamer_ip_gadget(const iio_device *dev, int sock_control, size_t udp_packet_size, const plutosdrStreamFormat format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t timestamp_every);
 		~rx_streamer_ip_gadget();
 
 		size_t recv(void * const *buffs,
@@ -51,11 +54,16 @@ class rx_streamer_ip_gadget : public rx_streamer {
 		int sock_data;
 		size_t udp_packet_size;
 
+		// report stream failure
+		bool _failed;
+
 		// Sample format
 		const plutosdrStreamFormat format;
 
 		// How often to expect a timestamp in the stream
 		uint32_t timestamp_every;
+		uint32_t timestamp_clock_rate;
+		uint32_t timestamp_increment;
 
 		// Read thread
 		std::thread thread;
@@ -78,9 +86,6 @@ class rx_streamer_ip_gadget : public rx_streamer {
 		// Expected sample size (bytes)
 		uint32_t sample_size_bytes;
 
-		// Expected timestamp size (samples)
-		uint32_t timestamp_size_samples;
-
 		// Fixed buffer size (user supplies or set due to timestamp)
 		bool fixed_buffer_size;
 
@@ -97,7 +102,7 @@ class rx_streamer_ip_gadget : public rx_streamer {
 		uint64_t curr_buffer_timestamp;
 
 		// Update buffer size, restarting stream if required
-		void set_buffer_size(const size_t _buffer_size);
+		void set_buffer_size(const size_t new_buffer_size_samples);
 
 		// Read thread - fetches data from USB device and places into fifo
 		void thread_func(uint32_t curr_enabled_channels, uint32_t curr_buffer_size_samples);
@@ -105,4 +110,35 @@ class rx_streamer_ip_gadget : public rx_streamer {
 		// Private start / stop functions
 		void _start(void);
 		void _stop(void);
+
+		int udp_recv(data_ip_hdr_t *hdr, uint8_t *payload, size_t buffer_offset);
+		int tcp_recv(data_ip_hdr_t *hdr, uint8_t *payload, size_t buffer_offset);
+
+		int check_state(data_ip_hdr_t *hdr);
+
+		int _data_fd;
+		bool _transport_tcp;
+		size_t _buffer_size;
+
+		struct {
+			struct msghdr msg;
+			struct iovec iov[2];
+		} _udp;
+
+		struct {
+			uint32_t buffer_size_samples;
+			size_t buffer_size;
+
+			size_t pkt_count;
+
+			// Track used buffer space
+			size_t buffer_used;
+
+			// Track buffer index and count
+			uint16_t block_index;
+			uint16_t block_count;
+
+			// Track timestamps
+			uint64_t last_seqno;
+		} _state;
 };

@@ -2,6 +2,10 @@
 
 #include <cstdint>
 
+#define DIRECT_IP_PORT_CONTROL (30432) // IIOD + 1
+#define DIRECT_IP_PORT_DATA (30433) // IIOD + 2
+
+
 /* Definitions - packet magic number */
 #define SDR_IP_GADGET_MAGIC (0x4F544C50)
 
@@ -28,6 +32,9 @@ typedef struct
 	/* Command header */
 	cmd_ip_header_t hdr;
 
+	/* TX host data port (will use client's IP but need to know the selected ephemeral port) */
+	uint16_t data_port;
+
 	/* Bitmask of enabled channels */
 	uint32_t enabled_channels;
 
@@ -41,6 +48,9 @@ typedef struct
 	*/
 	bool timestamping_enabled;
 
+	/* Transport data stream over TCP */
+	bool transport_tcp;
+
 	/*
 	** Buffer size (in samples) to request from IIO library
 	** Note: This should include space for the 64-bit timestamp.
@@ -51,8 +61,11 @@ typedef struct
 	** Likewise if RX0 and RX1's I and Q channels were enabled, each sample will be 4 * 16bit = 64bit
 	** as such only one sample would be required for the timestamp.
 	*/
-	uint32_t buffer_size;
+	uint32_t buffer_size_samples;
 
+	/* Timestamp increment per buffer adjusted to timestamp clock rate */
+	uint32_t timestamp_increment;
+	
 } cmd_ip_tx_start_req_t;
 
 typedef struct
@@ -74,6 +87,9 @@ typedef struct
 	*/
 	bool timestamping_enabled;
 
+	/* Transport data stream over TCP */
+	bool transport_tcp;
+
 	/*
 	** Buffer size (in samples) to request from IIO library
 	** Note: This should include space for the 64-bit timestamp.
@@ -84,7 +100,7 @@ typedef struct
 	** Likewise if RX0 and RX1's I and Q channels were enabled, each sample will be 4 * 16bit = 64bit
 	** as such only one sample would be required for the timestamp.
 	*/
-	uint32_t buffer_size;
+	uint32_t buffer_size_samples;
 
 	/* UDP packet size (bytes) */
 	/*
@@ -92,6 +108,9 @@ typedef struct
 	** Could be enlarged to 8972 (9000 byte ethernet payload - 20 byte IP header - 8 byte UDP header) if using jumbo frames
 	*/
 	uint16_t packet_size;
+
+	/* Timestamp increment per buffer adjusted to timestamp clock rate */
+	uint32_t timestamp_increment;
 
 } cmd_ip_rx_start_req_t;
 
@@ -119,11 +138,8 @@ typedef struct
 	uint32_t magic;
 
 	/* Block index / count */
-	uint8_t block_index;
-	uint8_t block_count;
-
-	/* Spare */
-	uint16_t unused;
+	uint16_t block_index;
+	uint16_t block_count;
 
 	/* Timestamp / sequence number */
 	uint64_t seqno;

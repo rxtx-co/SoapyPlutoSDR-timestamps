@@ -123,7 +123,7 @@ SoapySDR::Stream *SoapyPlutoSDR::setupStream(
 		{
 			// Use ip streaming gadget
 			this->rx_stream = std::unique_ptr<rx_streamer>(new rx_streamer_ip_gadget (rx_dev,
-																					  ip_sdr_dev_control, ip_sdr_dev_data, udp_packet_size,
+																					  ip_sdr_dev_control, udp_packet_size,
 																					  streamFormat, channels, args, timestamp_every_rx));
 
 		}
@@ -156,7 +156,7 @@ SoapySDR::Stream *SoapyPlutoSDR::setupStream(
 		{
 			// Use ip streaming gadget
 			this->tx_stream = std::unique_ptr<tx_streamer>(new tx_streamer_ip_gadget (tx_dev,
-																					  ip_sdr_dev_control, ip_sdr_dev_data, udp_packet_size,
+																					  ip_sdr_dev_control, udp_packet_size,
 																					  streamFormat, channels, args, timestamp_every_tx));
 
 		}

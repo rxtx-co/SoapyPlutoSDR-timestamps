@@ -3,7 +3,10 @@
 #include <sched.h>
 #include <pthread.h>
 
+#include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 #include "PlutoSDR_TXStreamerIPGadget.hpp"
 
@@ -14,13 +17,15 @@
 #include <SoapySDR/Time.hpp>
 
 #include "PlutoSDR_TimestampEvery.hpp"
+#include "PlutoSDR_Sockets.hpp"
 
-#include "sdr_ip_gadget_types.h"
-
-tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_device *_dev, int _sock_control, int _sock_data, size_t _udp_packet_size, const plutosdrStreamFormat _format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t _timestamp_every):
-	dev(_dev), sock_control(_sock_control), sock_data(_sock_data), udp_packet_size(_udp_packet_size), format(_format), timestamp_every(_timestamp_every), thread_stop(false), queue(16, false), curr_buffer_timestamp(0)
+tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_device *_dev, int _sock_control, size_t _udp_packet_size, const plutosdrStreamFormat _format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t _timestamp_every):
+	dev(_dev), sock_control(_sock_control), udp_packet_size(_udp_packet_size), format(_format), timestamp_every(_timestamp_every), thread_stop(false), queue(16, false), curr_buffer_timestamp(0)
 
 {
+	_failed = false;
+	sock_data = _data_fd = -1;
+
 	//default to channel 0, if none were specified
 	const std::vector<size_t> &channelIDs = channels.empty() ? std::vector<size_t>{0} : channels;
 
@@ -41,9 +46,6 @@ tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_device *_dev, int _sock_c
 
 	// Calculate expected sample size
 	sample_size_bytes = channel_list.size() * sizeof(uint16_t);
-
-	// Calculate timestamp size
-	timestamp_size_samples = (channel_list.size() == 2 ? 2 : 1);
 
 	// Calculate buffer length
 	if (args.count("bufflen") != 0) {
@@ -86,6 +88,29 @@ tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_device *_dev, int _sock_c
 	// Assume direct copying is supported
 	direct_copy = true;
 
+	// Transport TCP/UDP
+	_transport_tcp = false;
+	if (args.count("transport") && args.at("transport") == "tcp")
+		_transport_tcp = true;
+	SoapySDR_logf(SOAPY_SDR_INFO, "Transport: %s", _transport_tcp ? "tcp" : "udp");
+
+	// If timestamp is enable, what is the clock rate
+	timestamp_clock_rate = 0;
+	if ((timestamp_every > 0)
+		&& args.count("timestamp_clock_rate"))
+	{
+		uint32_t val;
+		try {
+			val = std::stoi(args.at("timestamp_clock_rate"));
+		} catch (const std::invalid_argument &) {
+			SoapySDR_logf(SOAPY_SDR_ERROR, "bad timestamp_clock_rate provided");
+			throw std::runtime_error("bad timestamp_clock_rate provided\n");
+		}
+		if (val > 0)
+			timestamp_clock_rate = val;
+		SoapySDR_logf(SOAPY_SDR_INFO, "Timestamp clock rate: %d", timestamp_clock_rate);
+	}
+
 	// Direct copy only supported for a single channel (of I + Q samples)
 	if (channel_list.size() != 2) direct_copy = false;
 
@@ -96,6 +121,17 @@ tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_device *_dev, int _sock_c
 
 	// Report status
 	SoapySDR_logf(SOAPY_SDR_INFO, "Has direct TX copy: %d", (int)direct_copy);
+
+	// Create data socket
+	struct sockaddr_in peer_addr;
+	socklen_t peer_addr_len = sizeof(peer_addr);
+	if (getpeername(sock_control, (struct sockaddr *)&peer_addr, &peer_addr_len)) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to get control socket peer address");
+		throw std::runtime_error("failed to get control socket peer address");
+	}
+
+	sock_data = create_data_socket(peer_addr, _transport_tcp);
+
 }
 
 tx_streamer_ip_gadget::~tx_streamer_ip_gadget()
@@ -111,6 +147,9 @@ int tx_streamer_ip_gadget::send(const void * const *buffs,
 								 const long long timeNs,
 								 const long timeoutUs)
 {
+	if (_failed)
+		return SOAPY_SDR_STREAM_ERROR;
+
 	// Convert timestamp, in case we need to use it
 	uint64_t temp_timestamp = SoapySDR::timeNsToTicks(timeNs, sample_rate);
 
@@ -138,7 +177,8 @@ int tx_streamer_ip_gadget::send(const void * const *buffs,
 		if (curr_buffer_samples_stored == buffer_size_samples) {
 			// Flush and return error code
 			int rc = flush(timeoutUs);
-			if (0 != rc) return rc;
+			if (0 != rc)
+				return rc;
 		}
 	}
 
@@ -280,6 +320,8 @@ int tx_streamer_ip_gadget::flush(const long timeoutUs)
 	// Reset buffer
 	curr_buffer.reset();
 
+	if (_failed)
+		return SOAPY_SDR_STREAM_ERROR;
 	return result;
 }
 
@@ -329,11 +371,6 @@ void tx_streamer_ip_gadget::set_buffer_size(const size_t _buffer_size)
 		// Save new buffer size
 		buffer_size_samples = _buffer_size;
 
-		// Re-calculate how many packets are required to transfer a buffer
-		size_t udp_payload_size = udp_packet_size - sizeof(data_ip_hdr_t);
-		size_t iio_buffer_size = buffer_size_samples * sample_size_bytes;
-		packets_per_buffer = (iio_buffer_size + (udp_payload_size - 1U)) / udp_payload_size;
-
 		if (was_running) {
 			// Start stream
 			_start();
@@ -343,94 +380,104 @@ void tx_streamer_ip_gadget::set_buffer_size(const size_t _buffer_size)
 
 void tx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t curr_buffer_size_samples)
 {
-	cmd_ip_t cmd;
-
-	// Start stream
-	cmd.hdr.magic = SDR_IP_GADGET_MAGIC;
-	cmd.hdr.cmd = SDR_IP_GADGET_COMMAND_START_TX;
-	cmd.start_tx.enabled_channels = curr_enabled_channels;
-	cmd.start_tx.timestamping_enabled = (timestamp_every > 0);
-	cmd.start_tx.buffer_size = curr_buffer_size_samples;
-	if (timestamp_every > 0) cmd.start_tx.buffer_size += timestamp_size_samples;
-	int rc = sendto(sock_control, &cmd, sizeof(cmd.start_tx), 0, NULL, 0);
-	if (rc < 0) {
-		SoapySDR_logf(SOAPY_SDR_ERROR, "Failed to send start TX stream cmd (%d)", rc);
-		return;
-	}
-
-	// Declare scatter gather array
-	struct mmsghdr *arr_mmsg_hdrs = new struct mmsghdr[packets_per_buffer];
-	struct iovec *arr_iovs = new struct iovec[2 * packets_per_buffer];
-	data_ip_hdr_t *arr_pkt_hdrs = new data_ip_hdr_t[packets_per_buffer];
-
+	// Re-calculate how many packets are required to transfer a buffer
 	// Calculate how much data can fit in each udp packet once header has been accounted for
-	size_t udp_payload_size = udp_packet_size - sizeof(data_ip_hdr_t);
-
-	// Pre-populate fixed fields
-	for (size_t i = 0; i < packets_per_buffer; i++)
-	{
-		// Reset objects
-		std::memset(&arr_mmsg_hdrs[i], 0x00, sizeof(arr_mmsg_hdrs[0]));
-		std::memset(&arr_iovs[2 * i], 0x00, 2 * sizeof(arr_iovs[0]));
-		std::memset(&arr_pkt_hdrs[i], 0x00, sizeof(arr_pkt_hdrs[0]));
-
-		// Each message makes use of two IOVs (one for the header and one for the data)
-		arr_mmsg_hdrs[i].msg_hdr.msg_iov = &arr_iovs[2 * i];
-		arr_mmsg_hdrs[i].msg_hdr.msg_iovlen = 2;
-
-		// First IOV of each pair points at packet header, next will point at payload and be updated just before tranmission
-		arr_iovs[(2 * i) + 0].iov_base = &arr_pkt_hdrs[i];
-		arr_iovs[(2 * i) + 0].iov_len = sizeof(data_ip_hdr_t);
-		arr_iovs[(2 * i) + 1].iov_base = NULL;
-		if (i < (packets_per_buffer - 1))
-		{
-			/* Not the last packet, therefore must be full */
-			arr_iovs[(2 * i) + 1].iov_len = udp_packet_size - sizeof(data_ip_hdr_t);
-		}
-		else
-		{
-			/* Last packet, work out how many bytes of the payload it will contain */
-			size_t iio_buffer_size = buffer_size_samples * sample_size_bytes;
-			arr_iovs[(2 * i) + 1].iov_len = sizeof(data_ip_hdr_t) + (iio_buffer_size % udp_payload_size);
-		}
-
-		/* Prepare packet headers, just need to fill in the sequence number at transmission time */
-		arr_pkt_hdrs[i].magic = SDR_IP_GADGET_MAGIC;
-		arr_pkt_hdrs[i].block_index = (uint8_t)i;
-		arr_pkt_hdrs[i].block_count = (uint8_t)packets_per_buffer;
-	}
+	_payload_size = buffer_size_samples * sample_size_bytes;
 
 	// Declare buffer
 	std::shared_ptr<seq_payload_t> buffer;
 
-	// Keep running until told to stop
-	while (!thread_stop.load()) {
-		// Read buffer from queue with 1s timeout
-		if (queue.pop(buffer, true, 1000000)) {
-			// Retrieved valid data block, update scatter/gather to send header and data
-			uint8_t *payload = buffer->payload.data();
-			for (size_t i = 0; i < packets_per_buffer; i++)
-			{
-				/* Set sequence number for packet */
-				arr_pkt_hdrs[i].seqno = buffer->seqno;
-
-				/* Set data pointer for packet */
-				arr_iovs[(2 * i) + 1].iov_base = payload;
-				payload += udp_payload_size;
-			}
-
-			/* Send all datagrams with single system call :-) */
-			if ((int)packets_per_buffer != sendmmsg(sock_data, arr_mmsg_hdrs, packets_per_buffer, 0))
-			{
-				/* Send failed */
-			}
-		}
+	if (_transport_tcp) {
+		tcp_prepare();
+		_data_fd = -1;	// wait for incoming connection XXX: ... shit
+	} else {
+		udp_prepare();
+		_data_fd = sock_data;
 	}
 
+
+	/* Update timestamp increment */
+	uint32_t timestamp_increment;
+	if (timestamp_every > 0) {
+		timestamp_increment = timestamp_clock_rate > 0
+				? (__int128_t(timestamp_every) * timestamp_clock_rate) / sample_rate
+				: timestamp_every;
+	} else {
+		timestamp_increment = curr_buffer_size_samples;
+	}
+
+
+	/*
+	**  Start stream
+	*/
+	// Retrieve data socket port
+	struct sockaddr_in addr;
+	socklen_t addr_len = sizeof(addr);
+	if (getsockname(sock_data, (struct sockaddr*)&addr, &addr_len) == -1) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "Error getting socket name");
+		return;
+	}
+
+	cmd_ip_t cmd;
+	cmd.hdr.magic = SDR_IP_GADGET_MAGIC;
+	cmd.hdr.cmd = SDR_IP_GADGET_COMMAND_START_TX;
+	cmd.start_tx.data_port = ntohs(addr.sin_port);
+	cmd.start_tx.enabled_channels = curr_enabled_channels;
+	cmd.start_tx.timestamping_enabled = (timestamp_every > 0);
+	cmd.start_tx.timestamp_increment = timestamp_increment;
+	cmd.start_tx.transport_tcp = _transport_tcp;
+	cmd.start_tx.buffer_size_samples = curr_buffer_size_samples;
+
+	int rc = sendto(sock_control, &cmd, sizeof(cmd.start_tx), 0, NULL, 0);
+	if (rc < 0) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "Failed to send start TX stream cmd (%d)", rc);
+		_failed = true;
+		return;
+	}
+	// ------------------------------------------
+
+	/* Main TX loop */
+	// Keep running until told to stop
+	while (!thread_stop.load()) {
+		if (_data_fd < 0) {
+			if ((_data_fd = tcp_wait_for_connection(sock_data)) < 0) {
+				_failed = true;
+				break;
+			}
+			continue;
+		}
+
+		// Read buffer from queue with 1s timeout
+		if (!queue.pop(buffer, true, 1000000))
+			continue;
+
+		uint64_t seqno = timestamp_clock_rate > 0
+			? (__int128(buffer->seqno) * sample_rate) / timestamp_clock_rate
+			: buffer->seqno;
+
+		uint8_t *payload = buffer->payload.data();
+
+		int rc;
+		if (_transport_tcp) {
+			rc = tcp_send(seqno, payload);
+		} else {
+			rc = udp_send(seqno, payload);
+		}
+		if (rc < 0)
+			break;
+	}
+
+	close(sock_data);
+	if (_data_fd != sock_data)
+		close(_data_fd);
+	sock_data = _data_fd = -1;
+
 	// Free buffers
-	delete arr_mmsg_hdrs;
-	delete arr_iovs;
-	delete arr_pkt_hdrs;
+	if (!_transport_tcp) {
+		delete[] _udp.arr_mmsg_hdrs;
+		delete[] _udp.arr_iovs;
+		delete[] _udp.arr_pkt_hdrs;
+	}
 
 	// Stop stream
 	cmd.hdr.magic = SDR_IP_GADGET_MAGIC;
@@ -474,4 +521,128 @@ void tx_streamer_ip_gadget::_stop(void)
 		// Wait for thread to stop
 		thread.join();
 	}
+}
+
+/*
+** Handle socket operations UDP/TCP
+*/
+int tx_streamer_ip_gadget::udp_prepare(void)
+{
+	_udp.packet_payload_size = udp_packet_size - sizeof(data_ip_hdr_t);
+	_udp.packets_per_buffer  = (_payload_size + (_udp.packet_payload_size - 1U)) / _udp.packet_payload_size;
+
+	// Declare scatter gather array
+	_udp.arr_mmsg_hdrs = new struct mmsghdr[_udp.packets_per_buffer];
+	_udp.arr_iovs = new struct iovec[2 * _udp.packets_per_buffer];
+	_udp.arr_pkt_hdrs = new data_ip_hdr_t[_udp.packets_per_buffer];
+
+	// Pre-populate fixed fields
+	for (size_t i = 0; i < _udp.packets_per_buffer; i++)
+	{
+		// Reset objects
+		std::memset(&_udp.arr_mmsg_hdrs[i], 0x00, sizeof(_udp.arr_mmsg_hdrs[0]));
+		std::memset(&_udp.arr_iovs[2 * i],  0x00, sizeof(_udp.arr_iovs[0]) * 2);
+		std::memset(&_udp.arr_pkt_hdrs[i],  0x00, sizeof(_udp.arr_pkt_hdrs[0]));
+
+		// Each message makes use of two IOVs (one for the header and one for the data)
+		_udp.arr_mmsg_hdrs[i].msg_hdr.msg_iov = &_udp.arr_iovs[2 * i];
+		_udp.arr_mmsg_hdrs[i].msg_hdr.msg_iovlen = 2;
+
+		// First IOV of each pair points at packet header, next will point at payload and be updated just before tranmission
+		_udp.arr_iovs[(2 * i) + 0].iov_base = &_udp.arr_pkt_hdrs[i];
+		_udp.arr_iovs[(2 * i) + 0].iov_len = sizeof(data_ip_hdr_t);
+		_udp.arr_iovs[(2 * i) + 1].iov_base = NULL;
+
+		/* Set data pointer for packet */
+		if (i < (_udp.packets_per_buffer - 1)) {
+			/* Not the last packet, therefore must be full */
+			_udp.arr_iovs[(2 * i) + 1].iov_len = _udp.packet_payload_size;
+		} else {
+			/* Last packet, work out how many bytes of the payload it will contain */
+			_udp.arr_iovs[(2 * i) + 1].iov_len = (_payload_size % _udp.packet_payload_size);
+		}
+
+		/* Prepare packet headers, just need to fill in the sequence number at transmission time */
+		_udp.arr_pkt_hdrs[i].magic = SDR_IP_GADGET_MAGIC;
+		_udp.arr_pkt_hdrs[i].block_index = (uint16_t)i;
+		_udp.arr_pkt_hdrs[i].block_count = (uint16_t)_udp.packets_per_buffer;
+	}
+
+	return 0;
+}
+
+int tx_streamer_ip_gadget::tcp_prepare()
+{
+	/* prepare packet header */
+	_tcp.pkt_hdr.magic = SDR_IP_GADGET_MAGIC;
+	_tcp.pkt_hdr.block_index = 0;
+	_tcp.pkt_hdr.block_count = 1;
+
+	return 0;
+}
+
+int tx_streamer_ip_gadget::udp_send(uint64_t seqno, uint8_t *payload)
+{
+	// Retrieved valid data block, update scatter/gather to send header and data
+	for (size_t i = 0; i < _udp.packets_per_buffer; i++)
+	{
+		/* Set sequence number for packet */
+		_udp.arr_pkt_hdrs[i].seqno = seqno;
+
+		_udp.arr_iovs[(2 * i) + 1].iov_base = payload;
+
+		payload += _udp.packet_payload_size;
+	}
+
+	/* Send all datagrams with single system call :-) */
+	int rc = 0;
+	while (!thread_stop.load()) {
+		rc = sendmmsg(_data_fd, _udp.arr_mmsg_hdrs, _udp.packets_per_buffer, 0);
+		if ((EWOULDBLOCK == errno) || (EAGAIN == errno))
+			continue;
+		break;
+	}
+
+	if ((int)_udp.packets_per_buffer != rc)
+	{
+		if (rc < 0) {
+			SoapySDR_logf(SOAPY_SDR_ERROR, "Failed to send on data socket: %s(%d)", strerror(errno), errno);
+			_failed = true;
+			return -1;
+		}
+		SoapySDR_logf(SOAPY_SDR_DEBUG, "Send overflow : sent packets = %d of %d",
+				rc, _udp.packets_per_buffer);
+	}
+
+	return 0;
+}
+
+int tx_streamer_ip_gadget::tcp_send_data(uint8_t *data, size_t size)
+{
+	size_t offset = 0;
+	while ((offset < size) && !thread_stop.load()) {
+		int rc = sendto(_data_fd, (const void *)&data[offset], size - offset, MSG_NOSIGNAL, NULL, 0);
+		if (rc < 0) {
+			if (EWOULDBLOCK == errno || EAGAIN == errno)
+				continue;
+			SoapySDR_logf(SOAPY_SDR_ERROR, "TCP: Failed to send on data socket: %s(%d)", strerror(errno), errno);
+			_failed = true;
+			return -1;
+		}
+		offset += rc;
+	}
+	return offset;
+}
+
+int tx_streamer_ip_gadget::tcp_send(uint64_t seqno, uint8_t *payload)
+{
+	_tcp.pkt_hdr.seqno = seqno;
+
+	if (tcp_send_data((uint8_t *)&_tcp.pkt_hdr, sizeof(data_ip_hdr_t)) != sizeof(data_ip_hdr_t))
+		return -1;
+
+	if (tcp_send_data(payload, _payload_size) != (int)_payload_size)
+		return -1;
+
+	return 0;
 }
