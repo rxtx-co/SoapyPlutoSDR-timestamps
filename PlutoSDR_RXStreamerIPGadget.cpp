@@ -449,6 +449,8 @@ void rx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 		} else {
 			rc = udp_recv(&hdr, &payload[_state.buffer_used], udp_packet_size - sizeof(data_ip_hdr_t));
 		}
+		if (thread_stop.load())
+			break;
 		if (rc <= 0) {
 			if (rc == 0)
 				continue;
@@ -678,11 +680,14 @@ int rx_streamer_ip_gadget::udp_recv(data_ip_hdr_t *hdr, uint8_t *payload, size_t
 	return rc - sizeof(data_ip_hdr_t);
 }
 
-static int tcp_recv_data(int sock, uint8_t *buffer, size_t size)
+int rx_streamer_ip_gadget::tcp_recv_data(int sock, uint8_t *buffer, size_t size)
 {
 	size_t offset = 0;
 	while (offset < size) {
-		int rc = recv(sock, &buffer[offset], size - offset, MSG_WAITALL);
+		if (thread_stop.load())
+			return -1;
+
+		int rc = recvfrom(sock, &buffer[offset], size - offset, MSG_WAITALL, NULL, NULL);
 		if (rc <= 0) {
 			if (rc == 0) {
 				SoapySDR_logf(SOAPY_SDR_ERROR, "tcp_recv_data :: Connection is closed by the peer");
@@ -700,13 +705,18 @@ static int tcp_recv_data(int sock, uint8_t *buffer, size_t size)
 	return offset;
 }
 
-static int tcp_stream_resync(int sock, data_ip_hdr_t *hdr, uint8_t *buffer, size_t buffer_size, size_t search_limit)
+int rx_streamer_ip_gadget::tcp_stream_resync(int sock, data_ip_hdr_t *hdr, uint8_t *buffer, size_t buffer_size, size_t search_limit)
 {
 	size_t processed_bytes = 0;
 	int buf_offset = 0;
 
 	while(processed_bytes < search_limit) {
-		int recv_bytes = recv(sock, &buffer[buf_offset], buffer_size - buf_offset, 0);
+		if (thread_stop.load())
+			return -1;
+
+		int recv_bytes = recvfrom(sock, &buffer[buf_offset],
+									buffer_size - buf_offset,
+									MSG_WAITALL, NULL, NULL);
 		if (recv_bytes <= 0) {
 			if ((EWOULDBLOCK == errno) || (EAGAIN == errno))
 				continue;
@@ -763,10 +773,8 @@ static int tcp_stream_resync(int sock, data_ip_hdr_t *hdr, uint8_t *buffer, size
 int rx_streamer_ip_gadget::tcp_recv(data_ip_hdr_t *hdr, uint8_t *payload, size_t payload_size)
 {
 	int rc = tcp_recv_data(_data_fd, (uint8_t *)hdr, sizeof(data_ip_hdr_t));
-	if (rc < 0) {
-		SoapySDR_logf(SOAPY_SDR_ERROR, "Failed to receive header on tcp data socket");
+	if (rc < 0)
 		return -1;
-	}
 
 	size_t payload_offset = 0;
 
@@ -786,20 +794,17 @@ int rx_streamer_ip_gadget::tcp_recv(data_ip_hdr_t *hdr, uint8_t *payload, size_t
 			search_buf_size = 4096;
 
 		int rc = tcp_stream_resync(_data_fd, hdr, payload, search_buf_size, _state.buffer_size * 2);
-		if (rc < 0) {
-			SoapySDR_logf(SOAPY_SDR_ERROR, "Failed to resynchronize");
+		if (rc < 0)
 			return -1;
-		}
+
 		payload_offset += rc;
 		if (payload_offset == payload_size)
 			return sizeof(data_ip_hdr_t);
 	}
 
 	rc = tcp_recv_data(_data_fd, &payload[payload_offset], (payload_size - payload_offset));
-	if (rc < 0) {
-		SoapySDR_logf(SOAPY_SDR_ERROR, "Failed to receive buffer on tcp data socket");
+	if (rc < 0)
 		return -1;
-	}
 
 	return payload_size;
 }

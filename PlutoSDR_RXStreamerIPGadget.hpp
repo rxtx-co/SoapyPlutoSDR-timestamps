@@ -113,6 +113,8 @@ class rx_streamer_ip_gadget : public rx_streamer {
 
 		int udp_recv(data_ip_hdr_t *hdr, uint8_t *payload, size_t buffer_offset);
 		int tcp_recv(data_ip_hdr_t *hdr, uint8_t *payload, size_t buffer_offset);
+		int tcp_recv_data(int sock, uint8_t *buffer, size_t size);
+		int tcp_stream_resync(int sock, data_ip_hdr_t *hdr, uint8_t *buffer, size_t buffer_size, size_t search_limit);
 
 		int check_state(data_ip_hdr_t *hdr);
 
