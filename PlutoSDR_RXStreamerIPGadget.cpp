@@ -154,11 +154,17 @@ size_t rx_streamer_ip_gadget::recv(void * const *buffs,
 {
 	if (!curr_buffer) {
 		// Need to dequeue a new buffer
-		if (!queue.pop(curr_buffer, (timeoutUs > 0), timeoutUs)) {
+		long waited_time = 0;
+		while (!thread_stop.load()) {
+			if (queue.pop(curr_buffer, (timeoutUs > 0), 1000))
+				break;
 			if (_failed)
 				return SOAPY_SDR_STREAM_ERROR;
-			// Failed to dequeue buffer within timeout
-			return SOAPY_SDR_TIMEOUT;
+			waited_time += 1000;
+			if (waited_time >= timeoutUs) {
+				// Failed to dequeue buffer within timeout
+				return SOAPY_SDR_TIMEOUT;
+			}
 		}
 
 		// Calculate items in buffer
@@ -507,7 +513,7 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 				" hdr.block_index=%" PRIu64
 				" hdr.block_count=%" PRIu64,
 				_state.pkt_count,
-				hdr->seqno, 
+				hdr->seqno,
 				hdr->block_index,
 				hdr->block_count);
 	}

@@ -23,7 +23,11 @@
 
 class tx_streamer_ip_gadget : public tx_streamer {
 	public:
-		tx_streamer_ip_gadget(const iio_device *dev, int sock_control, size_t udp_packet_size, const plutosdrStreamFormat format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t timestamp_every);
+		tx_streamer_ip_gadget(const iio_context *iio_ctx, const iio_device *dev,
+				int sock_control, size_t udp_packet_size,
+				const plutosdrStreamFormat format,
+				const std::vector<size_t> &channels,
+				const SoapySDR::Kwargs &args, uint32_t timestamp_every);
 		~tx_streamer_ip_gadget();
 
 		int send(const void * const *buffs,
@@ -47,6 +51,7 @@ class tx_streamer_ip_gadget : public tx_streamer {
 
 	private:
 		// IIO device
+		const iio_context *iio_ctx;
 		const iio_device *dev;
 
 		// IP gadget
@@ -105,6 +110,8 @@ class tx_streamer_ip_gadget : public tx_streamer {
 		// Private start / stop functions
 		void _start(void);
 		void _stop(void);
+
+		void sdr_set_timestamp_increment(uint32_t timestamp_increment);
 
 		// Transport control
 		int udp_prepare();

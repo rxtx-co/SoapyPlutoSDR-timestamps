@@ -1,4 +1,5 @@
 #include <cstring>
+#include <cinttypes>
 
 #include <sched.h>
 #include <pthread.h>
@@ -19,8 +20,14 @@
 #include "PlutoSDR_TimestampEvery.hpp"
 #include "PlutoSDR_Sockets.hpp"
 
-tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_device *_dev, int _sock_control, size_t _udp_packet_size, const plutosdrStreamFormat _format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t _timestamp_every):
-	dev(_dev), sock_control(_sock_control), udp_packet_size(_udp_packet_size), format(_format), timestamp_every(_timestamp_every), thread_stop(false), queue(16, false), curr_buffer_timestamp(0)
+tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_context *_iio_ctx, const iio_device *_dev, 
+	int _sock_control, size_t _udp_packet_size,
+	const plutosdrStreamFormat _format, const std::vector<size_t> &channels,
+	const SoapySDR::Kwargs &args, uint32_t _timestamp_every):
+	iio_ctx(_iio_ctx), dev(_dev),
+	sock_control(_sock_control), udp_packet_size(_udp_packet_size),
+	format(_format), timestamp_every(_timestamp_every),
+	thread_stop(false), queue(16, false), curr_buffer_timestamp(0)
 
 {
 	_failed = false;
@@ -186,9 +193,21 @@ int tx_streamer_ip_gadget::send(const void * const *buffs,
 		 && (flags & SOAPY_SDR_HAS_TIME)
 	   ) {
 			// Timestamping enabled and timestamp provided, capture it
-			if (temp_timestamp < curr_buffer_timestamp) {
+			if (curr_buffer_timestamp == 0) {
+				// ...
+			} else
+			if ((temp_timestamp + 1) < curr_buffer_timestamp) {
 				// Warn timestamp has jumped backwards
-				SoapySDR_logf(SOAPY_SDR_WARNING, "Backwards timestamp step!");
+				SoapySDR_logf(SOAPY_SDR_WARNING, "Timestamp backwards step: last=%" PRIu64 " new=%" PRIu64 " delta=%" PRIu64,
+						curr_buffer_timestamp,
+						temp_timestamp,
+						(curr_buffer_timestamp - temp_timestamp));
+			} else
+			if (abs((int64_t)curr_buffer_timestamp - (int64_t)temp_timestamp) > 1) {
+				SoapySDR_logf(SOAPY_SDR_WARNING, "Timestamp gap step: last=%" PRIu64 " new=%" PRIu64 " delta=%" PRIu64,
+						curr_buffer_timestamp,
+						temp_timestamp,
+						(curr_buffer_timestamp - temp_timestamp));
 			}
 
 			// Update current timestamp
@@ -312,9 +331,16 @@ int tx_streamer_ip_gadget::flush(const long timeoutUs)
 {
 	int result = 0;
 
-	if (!queue.push(curr_buffer, (timeoutUs > 0), timeoutUs)) {
-		// Failed to push entry within timeout
-		result = SOAPY_SDR_TIMEOUT;
+	long waited_time = 0;
+	while (!thread_stop.load()) {
+		if (queue.push(curr_buffer, (timeoutUs > 0), 1000))
+			break;
+		waited_time += 1000;
+		if (waited_time >= timeoutUs) {
+			// Failed to push entry within timeout
+			result = SOAPY_SDR_TIMEOUT;
+			break;
+		}
 	}
 
 	// Reset buffer
@@ -405,7 +431,7 @@ void tx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 	} else {
 		timestamp_increment = curr_buffer_size_samples;
 	}
-
+	sdr_set_timestamp_increment(timestamp_increment);
 
 	/*
 	**  Start stream
@@ -452,10 +478,12 @@ void tx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 			continue;
 
 		uint64_t seqno = timestamp_clock_rate > 0
-			? (__int128(buffer->seqno) * sample_rate) / timestamp_clock_rate
+			? (__int128(buffer->seqno) * timestamp_clock_rate) / sample_rate
 			: buffer->seqno;
 
 		uint8_t *payload = buffer->payload.data();
+
+		SoapySDR_logf(SOAPY_SDR_DEBUG, "TX buffer: seqno=%" PRIu64, seqno);
 
 		int rc;
 		if (_transport_tcp) {
@@ -520,6 +548,31 @@ void tx_streamer_ip_gadget::_stop(void)
 
 		// Wait for thread to stop
 		thread.join();
+	}
+}
+
+/*
+** Update timestamp increment into SDR
+*/
+void tx_streamer_ip_gadget::sdr_set_timestamp_increment(uint32_t timestamp_increment)
+{
+	iio_device *iio_dev_timestamp_ctrl = iio_context_find_device(iio_ctx, "axi-timestamp-ctrl");
+	if (iio_dev_timestamp_ctrl == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: cannot find axi-timestamp-ctrl device");
+		throw std::runtime_error("IIO: cannot find axi-timestamp-ctrl device");
+	}
+
+	iio_channel *iio_chan_dac = iio_device_find_channel(iio_dev_timestamp_ctrl, "dac", false);
+	if (iio_chan_dac == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO:axi-timestamp-ctrl: cannot find channel \"dac\"");
+		throw std::runtime_error("IIO:axi-timestamp-ctrl: cannot find channel \"dac\"");
+	}
+
+	long long v = timestamp_increment;
+	int ret = iio_channel_attr_write_longlong(iio_chan_dac, "dac_timestamp_increment", v);
+	if (ret != 0) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: failed to set dac_timestamp_increment=%u", timestamp_increment);
+		throw std::runtime_error("IIO: failed to set dac_timestamp_increment");
 	}
 }
 

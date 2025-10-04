@@ -337,6 +337,7 @@ class SoapyPlutoSDR : public SoapySDR::Device{
 		double get_sensor_value(struct iio_channel *chn) const;
 		std::string id_to_unit(const std::string &id) const;
 
+		iio_context *iio_ctx;
 		iio_device *dev;
 		iio_device *rx_dev;
 		iio_device *tx_dev;

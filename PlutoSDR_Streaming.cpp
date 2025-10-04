@@ -155,7 +155,7 @@ SoapySDR::Stream *SoapyPlutoSDR::setupStream(
 		if (-1 != ip_sdr_dev_control)
 		{
 			// Use ip streaming gadget
-			this->tx_stream = std::unique_ptr<tx_streamer>(new tx_streamer_ip_gadget (tx_dev,
+			this->tx_stream = std::unique_ptr<tx_streamer>(new tx_streamer_ip_gadget (iio_ctx, tx_dev,
 																					  ip_sdr_dev_control, udp_packet_size,
 																					  streamFormat, channels, args, timestamp_every_tx));
 

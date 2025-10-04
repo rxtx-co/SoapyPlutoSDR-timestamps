@@ -50,6 +50,7 @@ SoapyPlutoSDR::SoapyPlutoSDR( const SoapySDR::Kwargs &args ):
 		throw std::runtime_error("no device context found");
 	}
 
+	iio_ctx = ctx;
 	dev = iio_context_find_device(ctx, "ad9361-phy");
 	rx_dev = iio_context_find_device(ctx, "cf-ad9361-lpc");
 	tx_dev = iio_context_find_device(ctx, "cf-ad9361-dds-core-lpc");
