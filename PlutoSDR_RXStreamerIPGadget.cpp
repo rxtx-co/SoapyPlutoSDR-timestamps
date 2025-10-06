@@ -21,8 +21,16 @@
 
 #include "sdr_ip_gadget_types.h"
 
-rx_streamer_ip_gadget::rx_streamer_ip_gadget(const iio_device *_dev, int _sock_control, size_t _udp_packet_size, const plutosdrStreamFormat _format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t _timestamp_every):
-	dev(_dev), sock_control(_sock_control), udp_packet_size(_udp_packet_size), format(_format), timestamp_every(_timestamp_every), thread_stop(false), queue(16, true)
+rx_streamer_ip_gadget::rx_streamer_ip_gadget(
+	const iio_context *_iio_ctx, const iio_device *_dev,
+	int _sock_control, size_t _udp_packet_size,
+	const plutosdrStreamFormat _format, const std::vector<size_t> &channels,
+	const SoapySDR::Kwargs &args,
+	uint32_t _timestamp_every):
+	iio_ctx(_iio_ctx), dev(_dev),
+	sock_control(_sock_control), udp_packet_size(_udp_packet_size),
+	format(_format), timestamp_every(_timestamp_every),
+	thread_stop(false), queue(16, true)
 
 {
 	_failed = false;
@@ -107,7 +115,7 @@ rx_streamer_ip_gadget::rx_streamer_ip_gadget(const iio_device *_dev, int _sock_c
 	}
 
 	// Setup timestamping
-	SoapyPlutoSDR_TimestampEvery::update_device_timestamp_every(dev, timestamp_every, channel_list.size());
+	SoapyPlutoSDR_TimestampEvery::update_device_timestamp_every(iio_ctx, /* is_dac= */false, timestamp_every, channel_list.size());
 
 	// Assume direct copying is supported
 	direct_copy = true;

@@ -20,7 +20,12 @@
 
 class tx_streamer_usb_gadget : public tx_streamer {
 	public:
-		tx_streamer_usb_gadget(const iio_device *dev, libusb_device_handle* usb_dev, uint8_t intfc_num, uint8_t ep_num, const plutosdrStreamFormat format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t timestamp_every);
+		tx_streamer_usb_gadget(const iio_context *iio_ctx, const iio_device *dev,
+				libusb_device_handle* usb_dev, uint8_t intfc_num, uint8_t ep_num,
+				const plutosdrStreamFormat format,
+				const std::vector<size_t> &channels,
+				const SoapySDR::Kwargs &args,
+				uint32_t timestamp_every);
 		~tx_streamer_usb_gadget();
 
 		int send(const void * const *buffs,
@@ -44,6 +49,7 @@ class tx_streamer_usb_gadget : public tx_streamer {
 
 	private:
 		// IIO device
+		const iio_context *iio_ctx;
 		const iio_device *dev;
 
 		// USB gadget

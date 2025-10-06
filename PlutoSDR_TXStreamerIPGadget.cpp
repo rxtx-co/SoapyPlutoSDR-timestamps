@@ -90,7 +90,7 @@ tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_context *_iio_ctx, const 
 	}
 
 	// Setup timestamping
-	SoapyPlutoSDR_TimestampEvery::update_device_timestamp_every(dev, timestamp_every, channel_list.size());
+	SoapyPlutoSDR_TimestampEvery::update_device_timestamp_every(iio_ctx, /* is_dac= */ true, timestamp_every, channel_list.size());
 
 	// Assume direct copying is supported
 	direct_copy = true;
@@ -118,13 +118,32 @@ tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_context *_iio_ctx, const 
 		SoapySDR_logf(SOAPY_SDR_INFO, "Timestamp clock rate: %d", timestamp_clock_rate);
 	}
 
+	// If timestamp is enable, what is timestamp max wait in TX queue
+	timestamp_max_wait = 0;
+	if ((timestamp_every > 0)
+		&& args.count("timestamp_max_wait"))
+	{
+		uint32_t val;
+		try {
+			val = std::stoi(args.at("timestamp_max_wait"));
+		} catch (const std::invalid_argument &) {
+			SoapySDR_logf(SOAPY_SDR_ERROR, "bad timestamp_max_wait provided");
+			throw std::runtime_error("bad timestamp_max_wait provided\n");
+		}
+		if (val > 0)
+			timestamp_max_wait = val;
+		SoapySDR_logf(SOAPY_SDR_INFO, "Timestamp max wait: %u nanosec", timestamp_max_wait);
+	}
+
 	// Direct copy only supported for a single channel (of I + Q samples)
-	if (channel_list.size() != 2) direct_copy = false;
+	if (channel_list.size() != 2)
+		direct_copy = false;
 
 	// Check endianess
 	int16_t test_dst, test_src = 0x1234;
 	iio_channel_convert(channel_list[0], &test_dst, (const void *)&test_src);
-	if (test_src != test_dst) direct_copy = false;
+	if (test_src != test_dst)
+		direct_copy = false;
 
 	// Report status
 	SoapySDR_logf(SOAPY_SDR_INFO, "Has direct TX copy: %d", (int)direct_copy);
@@ -433,6 +452,16 @@ void tx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 	}
 	sdr_set_timestamp_increment(timestamp_increment);
 
+	/* Update timestamp max wait */
+	uint32_t max_wait_ticks = timestamp_max_wait;
+	if (timestamp_clock_rate > 0) {
+		max_wait_ticks = SoapySDR::timeNsToTicks(timestamp_max_wait, timestamp_clock_rate);
+	} else {
+		max_wait_ticks = SoapySDR::timeNsToTicks(timestamp_max_wait, sample_rate);
+	}
+	sdr_set_timestamp_max_wait(max_wait_ticks);
+
+
 	/*
 	**  Start stream
 	*/
@@ -573,6 +602,31 @@ void tx_streamer_ip_gadget::sdr_set_timestamp_increment(uint32_t timestamp_incre
 	if (ret != 0) {
 		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: failed to set dac_timestamp_increment=%u", timestamp_increment);
 		throw std::runtime_error("IIO: failed to set dac_timestamp_increment");
+	}
+}
+
+/*
+** Update timestamp increment into SDR
+*/
+void tx_streamer_ip_gadget::sdr_set_timestamp_max_wait(uint32_t max_wait_ticks)
+{
+	iio_device *iio_dev_timestamp_ctrl = iio_context_find_device(iio_ctx, "axi-timestamp-ctrl");
+	if (iio_dev_timestamp_ctrl == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: cannot find axi-timestamp-ctrl device");
+		throw std::runtime_error("IIO: cannot find axi-timestamp-ctrl device");
+	}
+
+	iio_channel *iio_chan_dac = iio_device_find_channel(iio_dev_timestamp_ctrl, "dac", false);
+	if (iio_chan_dac == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO:axi-timestamp-ctrl: cannot find channel \"dac\"");
+		throw std::runtime_error("IIO:axi-timestamp-ctrl: cannot find channel \"dac\"");
+	}
+
+	long long v = max_wait_ticks;
+	int ret = iio_channel_attr_write_longlong(iio_chan_dac, "dac_block_max_wait", v);
+	if (ret != 0) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: failed to set dac_block_max_wait=%u", max_wait_ticks);
+		throw std::runtime_error("IIO: failed to set dac_block_max_wait");
 	}
 }
 

@@ -68,6 +68,7 @@ class tx_streamer_ip_gadget : public tx_streamer {
 		// How often to expect a timestamp in the stream
 		uint32_t timestamp_every;
 		uint32_t timestamp_clock_rate;
+		uint32_t timestamp_max_wait;
 
 		// Read thread
 		std::thread thread;
@@ -112,6 +113,7 @@ class tx_streamer_ip_gadget : public tx_streamer {
 		void _stop(void);
 
 		void sdr_set_timestamp_increment(uint32_t timestamp_increment);
+		void sdr_set_timestamp_max_wait(uint32_t timestamp_max_wait);
 
 		// Transport control
 		int udp_prepare();

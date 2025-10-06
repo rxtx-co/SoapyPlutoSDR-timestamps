@@ -15,8 +15,15 @@
 
 #include "sdr_usb_gadget_types.h"
 
-tx_streamer_usb_gadget::tx_streamer_usb_gadget(const iio_device *_dev, libusb_device_handle* _usb_dev, uint8_t _intfc_num, uint8_t _ep_num, const plutosdrStreamFormat _format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &args, uint32_t _timestamp_every):
-	dev(_dev), usb_dev(_usb_dev), intfc_num(_intfc_num), ep_num(_ep_num), format(_format), timestamp_every(_timestamp_every), thread_stop(false), queue(16, false), curr_buffer_timestamp(0)
+tx_streamer_usb_gadget::tx_streamer_usb_gadget(
+	const iio_context *_iio_ctx, const iio_device *_dev,
+	libusb_device_handle* _usb_dev, uint8_t _intfc_num, uint8_t _ep_num,
+	const plutosdrStreamFormat _format, const std::vector<size_t> &channels,
+	const SoapySDR::Kwargs &args, uint32_t _timestamp_every):
+	iio_ctx(_iio_ctx), dev(_dev),
+	usb_dev(_usb_dev), intfc_num(_intfc_num), ep_num(_ep_num),
+	format(_format), timestamp_every(_timestamp_every),
+	thread_stop(false), queue(16, false), curr_buffer_timestamp(0)
 
 {
 	//default to channel 0, if none were specified
@@ -89,7 +96,7 @@ tx_streamer_usb_gadget::tx_streamer_usb_gadget(const iio_device *_dev, libusb_de
 	}
 
 	// Setup timestamping
-	SoapyPlutoSDR_TimestampEvery::update_device_timestamp_every(dev, timestamp_every, channel_list.size());
+	SoapyPlutoSDR_TimestampEvery::update_device_timestamp_every(iio_ctx, /* is_dac= */true, timestamp_every, channel_list.size());
 
 	// Assume direct copying is supported
 	direct_copy = true;

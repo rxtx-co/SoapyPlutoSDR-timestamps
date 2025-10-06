@@ -122,7 +122,7 @@ SoapySDR::Stream *SoapyPlutoSDR::setupStream(
 		if (-1 != ip_sdr_dev_control)
 		{
 			// Use ip streaming gadget
-			this->rx_stream = std::unique_ptr<rx_streamer>(new rx_streamer_ip_gadget (rx_dev,
+			this->rx_stream = std::unique_ptr<rx_streamer>(new rx_streamer_ip_gadget (iio_ctx, rx_dev,
 																					  ip_sdr_dev_control, udp_packet_size,
 																					  streamFormat, channels, args, timestamp_every_rx));
 
@@ -131,7 +131,7 @@ SoapySDR::Stream *SoapyPlutoSDR::setupStream(
 		else if (usb_sdr_dev)
 		{
 			// Use usb streaming gadget
-			this->rx_stream = std::unique_ptr<rx_streamer>(new rx_streamer_usb_gadget (rx_dev,
+			this->rx_stream = std::unique_ptr<rx_streamer>(new rx_streamer_usb_gadget (iio_ctx, rx_dev,
 																					   usb_sdr_dev, usb_sdr_intfc_num, usb_sdr_ep_in,
 																					   streamFormat, channels, args, timestamp_every_rx));
 		}
@@ -164,7 +164,7 @@ SoapySDR::Stream *SoapyPlutoSDR::setupStream(
 		else if (usb_sdr_dev)
 		{
 			// Use usb streaming gadget
-			this->tx_stream = std::unique_ptr<tx_streamer>(new tx_streamer_usb_gadget (tx_dev,
+			this->tx_stream = std::unique_ptr<tx_streamer>(new tx_streamer_usb_gadget (iio_ctx, tx_dev,
 																					   usb_sdr_dev, usb_sdr_intfc_num, usb_sdr_ep_out,
 																					   streamFormat, channels, args, timestamp_every_tx));
 		}
