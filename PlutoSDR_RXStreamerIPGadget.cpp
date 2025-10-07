@@ -290,7 +290,8 @@ size_t rx_streamer_ip_gadget::recv(void * const *buffs,
 	{
 		// Timestamp present
 		flags |= SOAPY_SDR_HAS_TIME;
-		timeNs = SoapySDR::ticksToTimeNs(curr_buffer_timestamp, sample_rate);
+		timeNs = SoapySDR::ticksToTimeNs(curr_buffer_timestamp,
+                    timestamp_clock_rate > 0 ? timestamp_clock_rate : sample_rate);
 	}
 
 	// Increment timestamp ticks or sequence number
@@ -516,7 +517,7 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 {
 	_state.pkt_count++;
 	if (0) {
-		SoapySDR_logf(SOAPY_SDR_DEBUG, "packet pkt=%" PRIu64
+		SoapySDR_logf(SOAPY_SDR_DEBUG, "RX: packet pkt=%" PRIu64
 				" hdr.seqno=%" PRIu64
 				" hdr.block_index=%" PRIu64
 				" hdr.block_count=%" PRIu64,
