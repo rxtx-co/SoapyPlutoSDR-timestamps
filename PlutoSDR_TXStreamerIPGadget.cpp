@@ -339,7 +339,10 @@ int tx_streamer_ip_gadget::send(const void * const *buffs,
 	if (curr_buffer_samples_stored == buffer_size_samples || (flags & SOAPY_SDR_END_BURST && numElems == items)) {
 		// Buffer is full, or caller has indicated this is the end of the burst, send buffer, returning any errors
 		int rc = flush(timeoutUs);
-		if (0 != rc) return rc;
+		if (0 != rc) {
+			curr_buffer_timestamp -= items;
+			return rc;
+		}
 	}
 
 	// Return number of samples copied
