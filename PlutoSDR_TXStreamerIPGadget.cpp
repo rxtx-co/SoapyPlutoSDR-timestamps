@@ -203,8 +203,10 @@ int tx_streamer_ip_gadget::send(const void * const *buffs,
 		if (curr_buffer_samples_stored == buffer_size_samples) {
 			// Flush and return error code
 			int rc = flush(timeoutUs);
-			if (0 != rc)
+			if (0 != rc) {
+				curr_buffer_timestamp -= samples_to_fill;
 				return rc;
+			}
 		}
 	}
 
