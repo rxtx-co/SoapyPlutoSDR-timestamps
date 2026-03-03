@@ -7,11 +7,9 @@
 #include <libusb.h>
 #endif
 
-static std::vector<SoapySDR::Kwargs> results;
 static std::vector<SoapySDR::Kwargs> find_PlutoSDR(const SoapySDR::Kwargs &args) {
 
-	if (!results.empty())
-		return results;
+	std::vector<SoapySDR::Kwargs> results;
 
 	ssize_t ret = 0;
 	iio_context *ctx = nullptr;
@@ -121,7 +119,7 @@ static std::vector<SoapySDR::Kwargs> find_PlutoSDR(const SoapySDR::Kwargs &args)
 					options["uri"] = std::string(iio_context_info_get_uri(info[i]));
 
 					// check if discovered libiio context can be a PlutoSDR (and not some other sensor),
-          // it must contain "ad9361-phy", "cf-ad9361-lpc" and "cf-ad9361-dds-core-lpc" devices
+					// it must contain "ad9361-phy", "cf-ad9361-lpc" and "cf-ad9361-dds-core-lpc" devices
 					iio_device *dev = iio_context_find_device(ctx, "ad9361-phy");
 					iio_device *rx_dev = iio_context_find_device(ctx, "cf-ad9361-lpc");
 					iio_device *tx_dev = iio_context_find_device(ctx, "cf-ad9361-dds-core-lpc");

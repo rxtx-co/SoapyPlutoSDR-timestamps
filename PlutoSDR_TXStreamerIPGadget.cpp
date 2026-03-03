@@ -96,7 +96,7 @@ tx_streamer_ip_gadget::tx_streamer_ip_gadget(const iio_context *_iio_ctx, const 
 	direct_copy = true;
 
 	// Transport TCP/UDP
-	_transport_tcp = false;
+	_transport_tcp = true;
 	if (args.count("transport") && args.at("transport") == "tcp")
 		_transport_tcp = true;
 	SoapySDR_logf(SOAPY_SDR_INFO, "Transport: %s", _transport_tcp ? "tcp" : "udp");
@@ -517,7 +517,7 @@ void tx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 
 		uint8_t *payload = buffer->payload.data();
 
-		SoapySDR_logf(SOAPY_SDR_DEBUG, "TX buffer: seqno=%" PRIu64, seqno);
+		//fprintf(stderr, "TX: seqno=%" PRIu64 "\n", seqno);
 
 		int rc;
 		if (_transport_tcp) {

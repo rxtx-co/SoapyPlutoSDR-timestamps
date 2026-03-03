@@ -121,7 +121,7 @@ rx_streamer_ip_gadget::rx_streamer_ip_gadget(
 	direct_copy = true;
 
 	// Transport TCP or UDP
-	_transport_tcp = false;
+	_transport_tcp = true;
 	if (args.count("transport") && args.at("transport") == "tcp")
 		_transport_tcp = true;
 
@@ -548,7 +548,7 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 
 		if (hdr->seqno < _state.last_seqno)
 		{
-			SoapySDR_logf(SOAPY_SDR_WARNING, "Time wrap :: "
+			SoapySDR_logf(SOAPY_SDR_WARNING, "Timestamp wrap: "
 							" pkt=%" PRIu64
 							" hdr.seqno=%" PRIu64
 							" - last_seqno=%" PRIu64
@@ -564,7 +564,7 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 				((timestamp_every == 0) && (hdr->seqno - _state.last_seqno) != _state.buffer_size_samples)
 			))
 		{
-			SoapySDR_logf(SOAPY_SDR_DEBUG, "Timestamp gap:"
+			SoapySDR_logf(SOAPY_SDR_WARNING, "Timestamp gap:"
 						" pkt=%" PRIu64
 						" last_seqno=%" PRIu64
 						" hdr.seqno=%" PRIu64

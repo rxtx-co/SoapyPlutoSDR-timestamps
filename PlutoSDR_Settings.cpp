@@ -1074,6 +1074,7 @@ void SoapyPlutoSDR::open_sdr_ip_gadget(void)
 		SoapySDR_logf(SOAPY_SDR_ERROR, "failed to retrieve IP from iio");
 		throw std::runtime_error("failed to retrieve IP from iio");
 	}
+    SoapySDR_logf(SOAPY_SDR_DEBUG, "IIO context ip-addr=%s", ip);
 
 	// Open sockets
 	this->ip_sdr_dev_control = socket(AF_INET, SOCK_DGRAM, 0);
