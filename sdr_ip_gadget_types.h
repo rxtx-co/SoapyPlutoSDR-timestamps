@@ -109,6 +109,9 @@ typedef struct
 	*/
 	uint16_t packet_size;
 
+	/* upper 16bits of timestamp includes extra data */
+	bool timestamp_extra_included;
+
 	/* Timestamp increment per buffer adjusted to timestamp clock rate */
 	uint32_t timestamp_increment;
 

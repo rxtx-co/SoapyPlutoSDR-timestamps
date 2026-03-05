@@ -21,6 +21,10 @@
 
 #include "sdr_ip_gadget_types.h"
 
+#define MASK_56b(x) ((x) & 0x00ffffffffffffff)
+#define MASK_40b(x) ((x) & 0x000000ffffffffff)
+
+
 rx_streamer_ip_gadget::rx_streamer_ip_gadget(
 	const iio_context *_iio_ctx, const iio_device *_dev,
 	int _sock_control, size_t _udp_packet_size,
@@ -74,6 +78,41 @@ rx_streamer_ip_gadget::rx_streamer_ip_gadget(
 			timestamp_clock_rate = val;
 		SoapySDR_logf(SOAPY_SDR_INFO, "Timestamp clock rate: %d", timestamp_clock_rate);
 	}
+
+	// does SDR includes extra opaq data into upper 16bits of the timestamp
+	timestamp_insert_extra = false;
+	if ((timestamp_every > 0)
+		&& args.count("timestamp_insert_extra"))
+	{
+		uint32_t val;
+		try {
+			val = std::stoi(args.at("timestamp_insert_extra"));
+		} catch (const std::invalid_argument &) {
+			SoapySDR_logf(SOAPY_SDR_ERROR, "bad timestamp_insert_extra provided");
+			throw std::runtime_error("bad timestamp_insert_extra provided\n");
+		}
+		if (val > 0)
+			timestamp_insert_extra = true;
+		SoapySDR_logf(SOAPY_SDR_INFO, "Timestamp insert extra: %d", timestamp_insert_extra);
+	}
+
+	// antenna encoder UART data input
+	encoder_uart_baud_rate = 0;
+	if (timestamp_insert_extra
+		&& args.count("encoder_uart_baud_rate")) {
+
+		uint32_t val;
+		try {
+			val = std::stoi(args.at("encoder_uart_baud_rate"));
+		} catch (const std::invalid_argument &) {
+			SoapySDR_logf(SOAPY_SDR_ERROR, "bad encoder_uart_baud_rate provided");
+			throw std::runtime_error("bad encoder_uart_baud_rate provided\n");
+		}
+		if (val > 0)
+			encoder_uart_baud_rate = val;
+		SoapySDR_logf(SOAPY_SDR_INFO, "Encoder UART baud rate: %u", encoder_uart_baud_rate);
+	}
+
 
 	// Assume buffer size will be supplied by user
 	fixed_buffer_size = true;
@@ -389,6 +428,13 @@ void rx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 		timestamp_increment = curr_buffer_size_samples;
 	}
 
+	if (timestamp_insert_extra) {
+		sdr_set_timestamp_insert_extra(timestamp_insert_extra);
+		if (encoder_uart_baud_rate > 0) {
+			sdr_set_uart_baud_rate(encoder_uart_baud_rate);
+		}
+	}
+
 	// Allocate temporary header
 	data_ip_hdr_t hdr;
 
@@ -433,6 +479,7 @@ void rx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 	cmd.start_rx.enabled_channels = curr_enabled_channels;
 	cmd.start_rx.timestamping_enabled = (timestamp_every > 0);
 	cmd.start_rx.timestamp_increment = timestamp_increment;
+	cmd.start_rx.timestamp_extra_included = timestamp_insert_extra;
 	cmd.start_rx.transport_tcp = _transport_tcp;
 	cmd.start_rx.buffer_size_samples = curr_buffer_size_samples;
 	cmd.start_rx.packet_size = udp_packet_size;
@@ -515,14 +562,18 @@ void rx_streamer_ip_gadget::thread_func(uint32_t curr_enabled_channels, uint32_t
 
 int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 {
+	uint64_t seqno = timestamp_insert_extra ? MASK_40b(hdr->seqno) : MASK_56b(hdr->seqno);
+	uint16_t extra_data = timestamp_insert_extra ? (hdr->seqno >> 40) & 0xffff : ~0;
+
 	_state.pkt_count++;
 	if (0) {
 		SoapySDR_logf(SOAPY_SDR_DEBUG, "RX: packet pkt=%" PRIu64
-				" hdr.seqno=%" PRIu64
+				" seqno=%" PRIu64
+				" extra_data=%" PRIu16
 				" hdr.block_index=%" PRIu64
 				" hdr.block_count=%" PRIu64,
 				_state.pkt_count,
-				hdr->seqno,
+				seqno, extra_data,
 				hdr->block_index,
 				hdr->block_count);
 	}
@@ -538,42 +589,42 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 						" pkt=%" PRIu64
 						" hdr.block_index=%" PRIu64
 						" hdr.block_count=%" PRIu64
-						" hdr.seqno=%" PRIu64,
+						" seqno=%" PRIu64,
 						_state.pkt_count,
 						hdr->block_index,
 						hdr->block_count,
-						hdr->seqno);
+						seqno);
 			return -1;
 		}
 
-		if (hdr->seqno < _state.last_seqno)
+		if (seqno < _state.last_seqno)
 		{
 			SoapySDR_logf(SOAPY_SDR_WARNING, "Timestamp wrap: "
 							" pkt=%" PRIu64
-							" hdr.seqno=%" PRIu64
+							" seqno=%" PRIu64
 							" - last_seqno=%" PRIu64
 							" = %" PRIu64,
 							_state.pkt_count,
-							hdr->seqno, _state.last_seqno,
-							_state.last_seqno - hdr->seqno);
+							seqno, _state.last_seqno,
+							_state.last_seqno - seqno);
 		} else
 		if (_state.pkt_count > 1 &&
 			(
-				((timestamp_every  > 0) && (abs(int64_t(hdr->seqno - _state.last_seqno) - timestamp_increment) > 1))
+				((timestamp_every  > 0) && (abs(int64_t(seqno - _state.last_seqno) - timestamp_increment) > 1))
 				||
-				((timestamp_every == 0) && (hdr->seqno - _state.last_seqno) != _state.buffer_size_samples)
+				((timestamp_every == 0) && (seqno - _state.last_seqno) != _state.buffer_size_samples)
 			))
 		{
 			SoapySDR_logf(SOAPY_SDR_WARNING, "Timestamp gap:"
 						" pkt=%" PRIu64
 						" last_seqno=%" PRIu64
-						" hdr.seqno=%" PRIu64
+						" seqno=%" PRIu64
 						" delta=%" PRId64
 						" timestamp_increment=%" PRIu64,
 						_state.pkt_count,
 						_state.last_seqno,
-						hdr->seqno,
-						hdr->seqno - _state.last_seqno,
+						seqno,
+						seqno - _state.last_seqno,
 						timestamp_increment);
 		}
 
@@ -582,14 +633,17 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 		_state.block_count = hdr->block_count;
 
 		/* timestamp from header to working data */
-		_state.last_seqno = hdr->seqno;
+		_state.last_seqno = seqno;
 
-		if (0) {
-			SoapySDR_logf(SOAPY_SDR_DEBUG, "NEW BLOCK pkt=%" PRIu64
-					" hdr.seqno=%" PRIu64
-					" hdr.block_count=%" PRIu64,
+		if (1) {
+			SoapySDR_logf(SOAPY_SDR_DEBUG, "NEW BLOCK"
+					" pkt=%" PRIu64
+					" hdr.block_count=%" PRIu64
+					" seqno=%" PRIu64
+					" extra_data=%" PRIu16,
 					_state.pkt_count,
-					hdr->seqno, hdr->block_count);
+					hdr->block_count,
+					seqno, extra_data);
 		}
 	}
 	else
@@ -597,7 +651,7 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 		/* Check index, total and timestamp match */
 		if ((_state.block_index != hdr->block_index) ||
 			(_state.block_count != hdr->block_count) ||
-			(_state.last_seqno  != hdr->seqno))
+			(_state.last_seqno  != seqno))
 		{
 			/* Either an out of order, or duplicate block, reset buffer */
 			_state.buffer_used = 0;
@@ -610,14 +664,15 @@ int rx_streamer_ip_gadget::check_state(data_ip_hdr_t *hdr)
 						" last_seqno=%" PRIu64
 						" hdr.block_index=%" PRIu64
 						" hdr.block_count=%" PRIu64
-						" hdr.seqno=%" PRIu64,
+						" seqno=%" PRIu64
+						" extra_data=%" PRIu16,
 						_state.pkt_count,
 						_state.block_index,
 						_state.block_count,
 						_state.last_seqno,
 						hdr->block_index,
 						hdr->block_count,
-						hdr->seqno);
+						seqno, extra_data);
 			return -1;
 		}
 	}
@@ -661,6 +716,55 @@ void rx_streamer_ip_gadget::_stop(void)
 		thread.join();
 	}
 }
+
+
+/*
+** Update timestamp increment into SDR
+*/
+void rx_streamer_ip_gadget::sdr_set_timestamp_insert_extra(uint32_t timestamp_insert_extra)
+{
+	iio_device *iio_dev_timestamp_ctrl = iio_context_find_device(iio_ctx, "axi-timestamp-ctrl");
+	if (iio_dev_timestamp_ctrl == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: cannot find axi-timestamp-ctrl device");
+		throw std::runtime_error("IIO: cannot find axi-timestamp-ctrl device");
+	}
+
+	iio_channel *iio_chan_clk = iio_device_find_channel(iio_dev_timestamp_ctrl, "clk", false);
+	if (iio_chan_clk == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO:axi-timestamp-ctrl: cannot find channel \"clk\"");
+		throw std::runtime_error("IIO:axi-timestamp-ctrl: cannot find channel \"clk\"");
+	}
+
+	long long v = timestamp_insert_extra;
+	int ret = iio_channel_attr_write_longlong(iio_chan_clk, "timestamp_insert_extra", v);
+	if (ret != 0) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: failed to set timestamp_insert_extra=%u", timestamp_insert_extra);
+		throw std::runtime_error("IIO: failed to set timestamp_insert_extra");
+	}
+}
+
+void rx_streamer_ip_gadget::sdr_set_uart_baud_rate(uint32_t baud_rate)
+{
+	iio_device *iio_dev_encoder_uart = iio_context_find_device(iio_ctx, "axi-encoder-uart-recv");
+	if (iio_dev_encoder_uart == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: cannot find axi-encoder-uart-recv device");
+		throw std::runtime_error("IIO: cannot find axi-encoder-uart-recv device");
+	}
+
+	iio_channel *iio_chan_uart = iio_device_find_channel(iio_dev_encoder_uart, "uart", false);
+	if (iio_chan_uart == nullptr) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO:axi-encoder-uart-recv: cannot find channel \"uart\"");
+		throw std::runtime_error("IIO:axi-encoder-uart-recv: cannot find channel \"uart\"");
+	}
+
+	long long v = baud_rate;
+	int ret = iio_channel_attr_write_longlong(iio_chan_uart, "uart_rx_baud_rate", v);
+	if (ret != 0) {
+		SoapySDR_logf(SOAPY_SDR_ERROR, "IIO: failed to set uart_rx_baud_rate=%u", baud_rate);
+		throw std::runtime_error("IIO: failed to set uart_rx_baud_rate");
+	}
+}
+
 
 /*
 ** Handle network traffic UDP/TCP

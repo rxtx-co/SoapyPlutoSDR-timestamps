@@ -108,6 +108,12 @@ class rx_streamer_ip_gadget : public rx_streamer {
 		// Update buffer size, restarting stream if required
 		void set_buffer_size(const size_t new_buffer_size_samples);
 
+		//
+		bool timestamp_insert_extra;
+		uint32_t encoder_uart_baud_rate;
+		void sdr_set_timestamp_insert_extra(uint32_t timestamp_insert_extra);
+		void sdr_set_uart_baud_rate(uint32_t baud_rate);
+
 		// Read thread - fetches data from USB device and places into fifo
 		void thread_func(uint32_t curr_enabled_channels, uint32_t curr_buffer_size_samples);
 
